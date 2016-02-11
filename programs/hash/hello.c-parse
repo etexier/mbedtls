@@ -1,0 +1,367 @@
+/*
+ *  Classic "Hello, world" demonstration program
+ *
+ *  Copyright (C) 2006-2015, ARM Limited, All Rights Reserved
+ *  SPDX-License-Identifier: Apache-2.0
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License"); you may
+ *  not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *  http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ *  WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *  This file is part of mbed TLS (https://tls.mbed.org)
+ */
+
+#if !defined(MBEDTLS_CONFIG_FILE)
+
+#include "mbedtls/config.h"
+
+#else
+#include MBEDTLS_CONFIG_FILE
+#endif
+
+#if defined(MBEDTLS_PLATFORM_C)
+#include "mbedtls/platform.h"
+#else
+
+#include <stdio.h>
+#include <mbedtls/bignum.h>
+#include <string.h>
+#include <mbedtls/rsa.h>
+#include <mbedtls/asn1write.h>
+#include <mbedtls/pk.h>
+#include <mbedtls/x509_crl.h>
+#include <mbedtls/x509_crt.h>
+
+#define mbedtls_printf     printf
+#endif
+
+#if defined(MBEDTLS_MD5_C)
+
+#include "mbedtls/md5.h"
+
+#endif
+#if defined(MBEDTLS_PLATFORM_C)
+#include "mbedtls/platform.h"
+#else
+
+#include <stdlib.h>
+
+#define mbedtls_free       free
+#define mbedtls_calloc    calloc
+#define mbedtls_snprintf   snprintf
+#endif
+
+#include <stdio.h>
+
+static char STRING_BUFFER[4096];
+
+char *SubString(char *string, unsigned int len)
+{
+	if (len > sizeof(STRING_BUFFER) / 2)
+	{
+		return NULL; // too long
+	}
+
+	if (string == NULL || len <= 0 || len > (int) sizeof(STRING_BUFFER))
+	{
+		return NULL;
+	}
+
+	memcpy(STRING_BUFFER, string, len);
+	STRING_BUFFER[len] = '\0';
+	return STRING_BUFFER;
+
+}
+
+unsigned char KnAsn1_der[] = {
+		0x30, 0x82, 0x01, 0xe8, 0x02, 0x01, 0x01, 0x31, 0x82, 0x01, 0xe1, 0x30,
+		0x76, 0x13, 0x58, 0x41, 0x30, 0x30, 0x38, 0x38, 0x42, 0x31, 0x54, 0x4e,
+		0x30, 0x30, 0x45, 0x30, 0x30, 0x30, 0x30, 0x31, 0x34, 0x42, 0x33, 0x30,
+		0x44, 0x39, 0x43, 0x36, 0x43, 0x43, 0x37, 0x45, 0x35, 0x39, 0x31, 0x36,
+		0x36, 0x37, 0x37, 0x31, 0x38, 0x41, 0x36, 0x33, 0x44, 0x36, 0x38, 0x42,
+		0x43, 0x43, 0x34, 0x42, 0x44, 0x46, 0x39, 0x38, 0x38, 0x45, 0x30, 0x46,
+		0x32, 0x34, 0x33, 0x45, 0x45, 0x31, 0x41, 0x37, 0x38, 0x34, 0x39, 0x35,
+		0x32, 0x45, 0x38, 0x42, 0x32, 0x30, 0x41, 0x36, 0x37, 0x44, 0x39, 0x43,
+		0x35, 0x36, 0x39, 0x36, 0x39, 0x44, 0x46, 0x02, 0x01, 0x02, 0x04, 0x0a,
+		0xff, 0xff, 0x22, 0x22, 0x22, 0x22, 0x27, 0x00, 0x00, 0x00, 0x02, 0x01,
+		0x00, 0x13, 0x04, 0x4b, 0x65, 0x79, 0x31, 0x04, 0x02, 0xde, 0x14, 0x30,
+		0x76, 0x13, 0x58, 0x41, 0x30, 0x30, 0x38, 0x38, 0x4b, 0x30, 0x54, 0x4e,
+		0x30, 0x30, 0x45, 0x30, 0x30, 0x30, 0x30, 0x39, 0x35, 0x32, 0x35, 0x41,
+		0x37, 0x30, 0x46, 0x44, 0x38, 0x33, 0x31, 0x41, 0x41, 0x45, 0x34, 0x41,
+		0x33, 0x44, 0x45, 0x37, 0x46, 0x30, 0x34, 0x38, 0x32, 0x35, 0x45, 0x46,
+		0x46, 0x36, 0x36, 0x43, 0x30, 0x39, 0x36, 0x37, 0x42, 0x38, 0x33, 0x33,
+		0x44, 0x41, 0x32, 0x36, 0x37, 0x33, 0x30, 0x32, 0x36, 0x32, 0x33, 0x34,
+		0x35, 0x34, 0x44, 0x43, 0x44, 0x38, 0x38, 0x37, 0x36, 0x39, 0x46, 0x30,
+		0x43, 0x30, 0x45, 0x36, 0x31, 0x37, 0x46, 0x02, 0x01, 0x01, 0x04, 0x0a,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x01,
+		0x01, 0x13, 0x04, 0x4b, 0x65, 0x79, 0x32, 0x04, 0x02, 0x82, 0xe1, 0x30,
+		0x77, 0x13, 0x58, 0x41, 0x30, 0x30, 0x38, 0x38, 0x4b, 0x30, 0x54, 0x4e,
+		0x30, 0x30, 0x45, 0x30, 0x30, 0x30, 0x30, 0x36, 0x33, 0x46, 0x42, 0x36,
+		0x37, 0x37, 0x31, 0x33, 0x30, 0x42, 0x41, 0x31, 0x43, 0x41, 0x34, 0x42,
+		0x31, 0x34, 0x46, 0x46, 0x39, 0x38, 0x32, 0x38, 0x46, 0x38, 0x46, 0x43,
+		0x37, 0x31, 0x45, 0x37, 0x39, 0x45, 0x39, 0x35, 0x39, 0x43, 0x38, 0x45,
+		0x42, 0x36, 0x42, 0x43, 0x46, 0x46, 0x44, 0x41, 0x42, 0x31, 0x31, 0x44,
+		0x35, 0x38, 0x35, 0x34, 0x30, 0x46, 0x44, 0x41, 0x32, 0x39, 0x34, 0x33,
+		0x45, 0x38, 0x35, 0x35, 0x45, 0x32, 0x37, 0x02, 0x01, 0x06, 0x04, 0x0a,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x01,
+		0x03, 0x13, 0x05, 0x4f, 0x74, 0x68, 0x65, 0x72, 0x04, 0x02, 0x8c, 0xa6,
+		0x30, 0x76, 0x13, 0x58, 0x41, 0x30, 0x30, 0x38, 0x38, 0x42, 0x30, 0x44,
+		0x4e, 0x30, 0x30, 0x45, 0x30, 0x30, 0x30, 0x30, 0x42, 0x43, 0x46, 0x46,
+		0x31, 0x30, 0x45, 0x38, 0x36, 0x44, 0x39, 0x42, 0x37, 0x32, 0x38, 0x31,
+		0x39, 0x44, 0x32, 0x45, 0x38, 0x37, 0x35, 0x41, 0x33, 0x46, 0x35, 0x35,
+		0x43, 0x33, 0x43, 0x31, 0x37, 0x30, 0x32, 0x45, 0x34, 0x38, 0x45, 0x42,
+		0x32, 0x35, 0x33, 0x43, 0x32, 0x42, 0x32, 0x36, 0x34, 0x43, 0x33, 0x37,
+		0x34, 0x44, 0x37, 0x43, 0x33, 0x36, 0x45, 0x34, 0x31, 0x46, 0x31, 0x44,
+		0x37, 0x35, 0x34, 0x36, 0x42, 0x34, 0x46, 0x31, 0x02, 0x01, 0x02, 0x04,
+		0x0a, 0xff, 0xff, 0x22, 0x22, 0x22, 0x22, 0x22, 0x20, 0x00, 0x00, 0x02,
+		0x01, 0x04, 0x13, 0x04, 0x54, 0x65, 0x73, 0x74, 0x04, 0x02, 0x8c, 0xa6
+};
+unsigned int KnAsn1_der_len = 492;
+
+// See Key Types Code p30 of Integration Guide VirtuCrypt RKLV2
+typedef enum
+{
+	KEY_TYPE_UNKNOWN = 0,
+	KEY_TYPE_MASTER = 1,
+	KEY_TYPE_DUKPT = 2,
+	// No need to
+} KeyType;
+
+char *Bytes2String(unsigned char *bytes, unsigned int len)
+{
+	unsigned char over = 0;
+	if (len > sizeof(STRING_BUFFER) / 2)
+	{
+		len = sizeof(STRING_BUFFER) / 2;
+		over = 1;
+	}
+
+	if (bytes == NULL || len <= 0 || len > sizeof(STRING_BUFFER))
+	{
+		return NULL;
+	}
+
+	unsigned int i = 0;
+
+	memset (STRING_BUFFER, 0, sizeof(STRING_BUFFER));
+	for (i = 0; i < len; i++)
+	{
+
+		unsigned char c = bytes[i];
+		unsigned char c1 = '0';
+		if (c >= 0xF)
+		{
+			c1 = (unsigned char) ((c & 0xF0) >> 4);
+			c1 = (unsigned char) (c1 < 10 ? c1 + '0' : (c1 - 10) + 'A');
+		}
+		STRING_BUFFER[i * 2] = c1;
+
+		unsigned char c2 = (unsigned char) (c & 0x0F);
+		c2 = (unsigned char) (c2 < 10 ? c2 + '0' : (c2 - 10) + 'A');
+		STRING_BUFFER[i * 2 + 1] = c2;
+	}
+	STRING_BUFFER[len * 2] = '\0';
+	if (over)
+	{
+		STRING_BUFFER[len * 2 - 1] = ']';
+		STRING_BUFFER[len * 2 - 2] = '.';
+		STRING_BUFFER[len * 2 - 3] = '.';
+		STRING_BUFFER[len * 2 - 4] = '[';
+	}
+
+	return STRING_BUFFER;
+}
+
+char *getKeyTypeName(KeyType type)
+{
+	switch (type)
+	{
+		case KEY_TYPE_MASTER:
+			return "MASTER";
+		case KEY_TYPE_DUKPT:
+			return "DUKPT";
+		default:
+			return NULL; // not supported
+	}
+}
+
+#define POYNT_DEBUG(fmt, ...)    printf("[D] "fmt, ##__VA_ARGS__)
+
+int main(void)
+{
+	// parse Asn1.
+
+	int ret;
+	unsigned char *p, *end;
+	size_t len = KnAsn1_der_len;
+	p = mbedtls_calloc(1, len);
+
+	end = p + len;
+	if (p == NULL)
+	{
+		POYNT_DEBUG("p is null\n");
+		return (MBEDTLS_ERR_X509_ALLOC_FAILED);
+	}
+
+	memcpy(p, KnAsn1_der, KnAsn1_der_len);
+
+	/*
+	 * KeyBlock ::= Sequence
+	 * {
+	 * 	keyblock version = 1 (INTEGER)
+	 * 	Keys ::= Set
+	 * 	{
+	 * 		keyinfo ::= Sequence
+	 * 		{
+	 * 			TR31Key = (PRINTABLESTRING)
+	 * 			keyType = (INTEGER)
+	 * 			ksn = (OCTET STRING) - if tkeyType is not DUKPT 00 00 00 00 00 00 00 00 00 00
+	 * 			keySlot = (INTEGER)
+	 * 			keyName = (PRINTABLESTRING)
+	 * 			keyCheck = (OCTET STRING)
+	 * 		}
+	 * 	}
+	 * }
+	 */
+
+
+	POYNT_DEBUG("p[0] 0x%x (0x%x)\n", p[0], MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE);
+	// Get KeyBlock Sequence
+	if ((ret = mbedtls_asn1_get_tag(&p, end, &len,
+									MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) != 0)
+	{
+		// Not a sequence
+		POYNT_DEBUG("NOT A SEQUENCE\n");
+		return (MBEDTLS_ERR_X509_INVALID_FORMAT);
+	}
+
+	POYNT_DEBUG("found sequence\n");
+
+	// p - updated to immediately after the tag and length
+	// len length of value
+
+	// Sanity check
+	if (len > (size_t) (end - p))
+	{
+		return (MBEDTLS_ERR_X509_INVALID_FORMAT +
+				MBEDTLS_ERR_ASN1_LENGTH_MISMATCH);
+	}
+	int val;
+	if (mbedtls_asn1_get_int(&p, end, &val))
+	{
+		// Not an integer
+		POYNT_DEBUG("Not an integer");
+		return (MBEDTLS_ERR_X509_INVALID_FORMAT);
+
+	}
+
+
+	POYNT_DEBUG("Found version %d\n", val);
+
+	if ((ret = mbedtls_asn1_get_tag(&p, end, &len,
+									MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SET)) != 0)
+	{
+		// Not a sequence
+		POYNT_DEBUG("NOT A SET\n");
+		return (MBEDTLS_ERR_X509_INVALID_FORMAT);
+	}
+	POYNT_DEBUG("Found SEQUENCE\n");
+
+	while (end - p > 0)
+	{
+		POYNT_DEBUG("=================\n");
+		if ((ret = mbedtls_asn1_get_tag(&p, end, &len,
+										MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) != 0)
+		{
+			// Not a sequence
+			POYNT_DEBUG("NOT A SEQUENCE\n");
+			return (MBEDTLS_ERR_X509_INVALID_FORMAT);
+		}
+		POYNT_DEBUG("Found SEQUENCE\n");
+
+		// TR31Key
+		if ((ret = mbedtls_asn1_get_tag(&p, end, &len,
+										MBEDTLS_ASN1_PRINTABLE_STRING)) != 0)
+		{
+			// Not a sequence
+			POYNT_DEBUG("NOT A TR31 Key\n");
+			return (MBEDTLS_ERR_X509_INVALID_FORMAT);
+		}
+		char tr31Key[len];
+		memcpy(tr31Key, p, len);
+
+		POYNT_DEBUG("Found TR31Key (%d) %.*s\n", len, (int) len, tr31Key);
+		p += len;
+
+		// Key Type
+		int keyType;
+		if (mbedtls_asn1_get_int(&p, end, &keyType))
+		{
+			// Not an integer
+			POYNT_DEBUG("Not an integer");
+			return (MBEDTLS_ERR_X509_INVALID_FORMAT);
+		}
+		POYNT_DEBUG("Found type %s(%d)", getKeyTypeName(keyType), keyType);
+
+		// KSN
+		if (mbedtls_asn1_get_tag(&p, end, &len, MBEDTLS_ASN1_OCTET_STRING) != 0)
+		{
+			// Not an integer
+			POYNT_DEBUG("Not an OCTET STRING");
+			return (MBEDTLS_ERR_X509_INVALID_FORMAT);
+		}
+		unsigned char ksn[len];
+		memcpy(ksn, p, len);
+		POYNT_DEBUG("Found KSN (len:%u)%s\n", len, Bytes2String(ksn, len));
+		p += len;
+
+		// Key slot
+		int slot;
+		if (mbedtls_asn1_get_int(&p, end, &slot))
+		{
+			// Not an integer
+			POYNT_DEBUG("Not an integer");
+			return (MBEDTLS_ERR_X509_INVALID_FORMAT);
+		}
+		POYNT_DEBUG("Found slot %d\n", slot);
+
+		// Key Name
+		if ((ret = mbedtls_asn1_get_tag(&p, end, &len,
+										MBEDTLS_ASN1_PRINTABLE_STRING)) != 0)
+		{
+			// Not a sequence
+			POYNT_DEBUG("NOT A PRINTABLESTRING\n");
+			return (MBEDTLS_ERR_X509_INVALID_FORMAT);
+		}
+		char keyName[len];
+		memcpy(keyName, p, len);
+
+		POYNT_DEBUG("Found Key Name %.*s\n", (int) len, keyName);
+		p += len;
+
+
+		// Key Check
+		if (mbedtls_asn1_get_tag(&p, end, &len, MBEDTLS_ASN1_OCTET_STRING) != 0)
+		{
+			// Not an integer
+			POYNT_DEBUG("Not an OCTET STRING");
+			return (MBEDTLS_ERR_X509_INVALID_FORMAT);
+		}
+		unsigned char kc[len];
+		memcpy(kc, p, len);
+		POYNT_DEBUG("Found Key Check (len:%u)%s\n", len, Bytes2String(kc, len));
+		p += len;
+
+	}
+
+	POYNT_DEBUG("End... %d bytes left", end - p);
+}
+
