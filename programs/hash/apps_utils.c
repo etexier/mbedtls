@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "apps_utils.h"
-char STRING_BUFFER[2048];
+char STRING_BUFFER[4096];
 
 
 char *SubString(char *string, unsigned int len)
