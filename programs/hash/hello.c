@@ -8,6 +8,7 @@
 #include "rkl_db.h"
 
 #if !defined(MBEDTLS_CONFIG_FILE)
+
 #include "mbedtls/config.h"
 
 
@@ -50,7 +51,6 @@
 #endif
 
 
-
 #include <stdio.h>
 #include <mbedtls/oid.h>
 
@@ -64,6 +64,9 @@
 
 certificate_info_t certificateInfo;
 enveloped_data_t envelopedData;
+
+
+unsigned int calculateEnvevelopedDataDigest(unsigned char digest[256], enveloped_data_t *pData);
 
 unsigned int RklTestTr34_PrintEnvelopedData(enveloped_data_t *envelopedData)
 {
@@ -87,33 +90,55 @@ int main(void)
 	unsigned char encEK[256];
 	memset(encEK, 0xAB, 256);
 
+	POYNT_LOG("Test starting..")
 	unsigned int r;
-	r = RklTr34_GetCertificateInfo(&certificateInfo, "US", "Poynt Co.", "RKI Sample", 22334455);
+	r = RklTr34_GetCertificateInfo(&certificateInfo, "US", "TR34 Samples", "TR34 Sample CA KRD", 2233);
+	if (r)
+	{
+		POYNT_ERROR("Error %s(0x%x)", RS(r));
+		return r;
+	}
 
-	r = RklTr34_GetCertificateInfo(&certificateInfo, "US", "Poynt Co.", "RKI Sample", 22334455);
 	r = RklTr34_CreateEnvelopeData(&envelopedData,
 								   RklInject_GetAndSetNewEphemeralKey(),
 								   RklInject_GetAndSetNewSessionKeyIv(),
 								   RklTr34_GetSessionKeyHeader(),
 								   &certificateInfo,
 								   RklInject_GetAndSetNewSessionKey());
+
+
+	if (r)
+	{
+		POYNT_ERROR("Error %s(0x%x)", RS(r));
+		return r;
+	}
 	RklTestTr34_PrintEnvelopedData(&envelopedData);
 
-	envelopedData.certificateInfo = &certificateInfo;
-	PCI_ClearBuffer(envelopedData.encEphemeralKey, FILL_RANDOM, sizeof(envelopedData.encEphemeralKey));
-	memset(envelopedData.iv, 0, sizeof(envelopedData.iv));
+	signed_attributes_t signedAttributes;
+	r = RklTr34_CreateSignedAttributes(&signedAttributes,
+									   RklInject_GetAndSetNewDeviceNonce(),
+									   RklTr34_GetSessionKeyHeader(),
+									   &envelopedData);
+
+
+	if (r)
+	{
+		POYNT_ERROR("Error %s(0x%x)", RS(r));
+		return r;
+	}
+
+
 	PCI_U8(blob, TR34_BLOB_BYTES_MAXLEN);
 	unsigned short blobLen = 0;
-	r = RklTr34_CreateBlob(blob, &blobLen, &envelopedData);
+	r = RklTr34_CreateBlob(blob, &blobLen, &envelopedData, &signedAttributes);
+	if (r)
+	{
+		POYNT_ERROR("Error %s(0x%x)", RS(r));
+		return r;
+	}
 	POYNT_LOG("TR34 Blob (len:%d): %s", blobLen, Bytes2String(blob, blobLen));
 
-////	int r = RklTls_GetDerEnvelopedData(buf, sizeof(buf), &len, &envelopedData);
-//	if (r)
-//	{
-//		POYNT_ERROR("Couldn't convert ASN1 structure DER format");
-//		return r;
-//	}
-	POYNT_DEBUG("DER: (len:%d) %s", len, Bytes2String(buf + sizeof(buf) - len, (unsigned int) len));
+	POYNT_DEBUG("DER: (len:%d) %s", blobLen, Bytes2String(blob, blobLen));
 	return NO_ERROR;
 
 }

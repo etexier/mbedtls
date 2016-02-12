@@ -73,13 +73,21 @@ unsigned int RklTr34_CreateEnvelopeData(enveloped_data_t *envelopedData,
 										certificate_info_t *certificateInfo,
 										unsigned char *sessionKey);
 
+unsigned int RklTr34_CreateSignedAttributes(signed_attributes_t *pAttributes, char *nonce, unsigned char *header,
+											enveloped_data_t *pData);
+
+unsigned int RklTr34_GetSignedAttributesDer(unsigned char *der, unsigned short *derLen, signed_attributes_t *signedAttributes);
+
+
 /**
  * Create TR34 blob. Assembles the enveloped data, key block,
  * and signed attributes structures then combines them into the signed data structure.
  */
-unsigned int RklTr34_CreateBlob(unsigned char *blob, unsigned short *blobLen, enveloped_data_t *envelopedData);
+unsigned int RklTr34_CreateBlob(unsigned char *blob, unsigned short *blobLen, enveloped_data_t *envelopedData,
+								signed_attributes_t *signedAttributes);
 
 unsigned int RklTr34_GetEncEphemeralKey(unsigned char *encEK);
+unsigned int Pkcs1Sign(unsigned char *signature, unsigned char* kaData, unsigned short kaDataLength, rsa_key_pair_t *rsaKeyPair);
 
 
 #endif // _RKL_TR34_H_

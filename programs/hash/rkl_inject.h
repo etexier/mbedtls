@@ -11,5 +11,6 @@ unsigned char *RklInject_GetAndSetNewEphemeralKey();
 unsigned char *RklTr34_GetSessionKey();
 unsigned char *RklTr34_GetRkiEphemeralKey();
 unsigned char *RklTr34_GetSessionKeyIv();
+char *RklInject_GetAndSetNewDeviceNonce();
 
 #endif //MBED_TLS_RKL_INJECT_H

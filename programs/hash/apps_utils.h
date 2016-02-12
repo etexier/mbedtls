@@ -30,8 +30,9 @@ typedef enum
 
 #define POYNT_DEBUG(fmt, ...)    printf("[D] "fmt, ##__VA_ARGS__);printf("\n");
 #define POYNT_ERROR(fmt, ...)    printf("[E] "fmt, ##__VA_ARGS__);printf("\n");
-#define POYNT_TRACE(fmt, ...)    printf("[E] "fmt, ##__VA_ARGS__);printf("\n");
-#define POYNT_LOG(fmt, ...)    printf("[E] "fmt, ##__VA_ARGS__);printf("\n");
+#define POYNT_INFO(fmt, ...)    printf("[I] "fmt, ##__VA_ARGS__);printf("\n");
+#define POYNT_TRACE(fmt, ...)    printf("[T] "fmt, ##__VA_ARGS__);printf("\n");
+#define POYNT_LOG(fmt, ...)    printf(fmt, ##__VA_ARGS__);printf("\n");
 
 #define POYNT_WARN(fmt, ...)    printf("[E] "fmt, ##__VA_ARGS__);printf("\n");
 char *Bytes2String(unsigned char *bytes, unsigned int len);

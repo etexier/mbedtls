@@ -1,6 +1,7 @@
 #include "ProtocolDefinitions.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include "apps_utils.h"
 char STRING_BUFFER[2048];
 
@@ -212,7 +213,7 @@ int isZeroized(unsigned char *p, int len)
 int Encrypt3DesCbc(unsigned char *dataOut, unsigned char *dataIn, unsigned char *key, unsigned char *IV,
 				   unsigned int data_byteLen)
 {
-	memcpy(dataOut, dataIn, data_byteLen);
+	memset(dataOut, 0xFF, data_byteLen);
 	return 0;
 }
 void ApplyPKCS5Padding(unsigned char *data, unsigned short dataLen, unsigned short *paddedDataLen)

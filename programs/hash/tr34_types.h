@@ -50,8 +50,9 @@
 #define TR34_SESSION_KEY_BLOCK_LEN 16
 #define TR34_SESSION_KEY_IV_LEN 8
 #define TR34_MAX_SESSION_KEY_BLOCK_LEN 1024
-#define TR34_BLOB_BYTES_MAXLEN 1024
-#define TR34_ENC_EK_LEN 256
+#define TR34_BLOB_BYTES_MAXLEN 2048
+#define TR34_PUB_KEY_ENC_DATA_LEN 256
+#define TR34_DIGEST_LEN 32
 
 #define TDES_KEY_BYTES_LENGTH 24
 
@@ -69,7 +70,6 @@
 // X9 TR-34 spec B.2.2.1.1.1 p56
 typedef struct certificate_info // issuer and serial number
 {
-	unsigned int version;
 	char countryName[32+1];
 	char organizationName[256+1];
 	char commonName[32+1];
@@ -102,7 +102,7 @@ typedef struct tr34_key_block
 typedef struct envelope_data
 {
 	certificate_info_t *certificateInfo;
-	unsigned char encEphemeralKey[TR34_ENC_EK_LEN];
+	unsigned char encEphemeralKey[TR34_PUB_KEY_ENC_DATA_LEN];
 	unsigned char encSessionKey[TR34_MAX_SESSION_KEY_BLOCK_LEN];
 	unsigned short encSessionKeyLen;
 	unsigned char *iv;
@@ -115,24 +115,14 @@ typedef struct envelope_data
 
 typedef struct signed_attributes
 {
-	char nonce[8+1];
-	char header[10*2+1];
-	char digest[64+1];
+	char *nonce; // nonce in ASCII
+	unsigned char header[TR34_SESSION_KEY_BLOCK_LEN];
+	unsigned char digest[TR34_DIGEST_LEN]; // SHA256 digest of envelope data
+	unsigned char signature[TR34_PUB_KEY_ENC_DATA_LEN]; // signature of attributes signed with 2048bits pubkey
 
 } signed_attributes_t;
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Signed Data
-/////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-typedef struct signed_data
-{
-	enveloped_data_t *envelopeData;
-	certificate_info_t *ertificateInfo;
-	char *signature[256*2+1];
-	signed_attributes_t *signedAttributes;
-
-} signed_data_t;
 
 
 #endif // _TR34_TYPES_H

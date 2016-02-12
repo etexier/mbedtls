@@ -97,6 +97,7 @@
 #define MBEDTLS_PK_WRITE_C
 #define MBEDTLS_PEM_WRITE_C
 #define MBEDTLS_ERROR_C
+#define MBEDTLS_PKCS1_V21
 #include "mbedtls/check_config.h"
 
 #endif /* MBEDTLS_CONFIG_H */

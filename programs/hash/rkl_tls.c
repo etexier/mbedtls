@@ -47,6 +47,7 @@
 #include "tr34_types.h"
 #include <mbedtls/oid.h>
 #include <string.h>
+#include <mbedtls/sha256.h>
 #include "rkl_tr34.h"
 #include "ProtocolDefinitions.h"
 
@@ -72,7 +73,6 @@
 #define KEY_DER_MAX_SIZE 2048
 #define CERT_VERIFICATION_FAILURE_INFO(_x_) certVerificationFailureInfo(_x_)
 
-// use https://www.viathinksoft.com/~daniel-marschall/asn.1/oid-converter/online.php OID converter
 // '1.2.840.113549.1.1.7'
 #define OID_RSAES_OAEP "\x2A\x86\x48\x86\xF7\x0D\x01\x01\x07"
 // 1.2.840.113549.1.1.8
@@ -86,10 +86,29 @@
 // 1.2.840.113549.1.7.2
 #define OID_PKCS7_SIGNED_DATA "\x2A\x86\x48\x86\xF7\x0D\x01\x07\x02"
 
+// 1.2.840.113549.1.9.4
+#define OID_MESSAGE_DIGEST "\x2A\x86\x48\x86\xF7\x0D\x01\x09\x04"
+
+// 1.2.840.113549.1.9.25.3
+#define OID_NONCE "\x2A\x86\x48\x86\xF7\x0D\x01\x09\x19\x03"
+
+// '1.2.840.113549.1.9.3'
+#define OID_CONTENT_TYPE "\x2A\x86\x48\x86\xF7\x0D\x01\x09\x03"
+
 // 1.2.840.113549.1.7.3
 #define OID_PKCS7_ENVELOPED_DATA "\x2A\x86\x48\x86\xF7\x0D\x01\x07\x03"
-#define OID_ADD_LEN(_X_) _X_, sizeof(_X_)-1
+#define OID_ADD_LEN_CONST(_X_) _X_, sizeof(_X_)-1
+#define OID_ADD_VAR(_X_) _X_, strlen(_X_)
 
+#define ADD_SET(p, start) \
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len)); \
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SET));
+#define ADD_SEQUENCE(p, start) \
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len)); \
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
+#define ADD_ALG_256_SEQ(p, start)    \
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN_CONST(MBEDTLS_OID_DIGEST_ALG_SHA256))); \
+    ADD_SEQUENCE(p, start);
 
 /*
  *********************************************************************************************************
@@ -123,11 +142,37 @@ static int writeEnvelopedDataOidMgf1(unsigned char **p, unsigned char *start);
 
 static int writeKeyBlockHeaderSequence(unsigned char **p, unsigned char *start, unsigned char *keyHeader);
 
-static int writeEnvelopedData(unsigned char **p, unsigned char *start, enveloped_data_t *envelopedData);
+static int writePkc7EnvData(unsigned char **p, unsigned char *start, enveloped_data_t *envelopedData);
 
 static int writeSignedDataDigestSet(unsigned char **p, unsigned char *start);
 
+static int writeEnvelopedData(unsigned char **p, unsigned char *start, enveloped_data_t *envelopedData);
 
+static unsigned int getPkc7EnvData(unsigned char *outBuf, unsigned short outBufSize, unsigned short *outLen,
+								   enveloped_data_t *envelopedData);
+
+int writeSignedDataSeq(unsigned char **p, unsigned char *start, enveloped_data_t *envelopedData,
+					   signed_attributes_t *signedAttributes);
+
+static int writeSignedDataInnerSet(unsigned char **p, unsigned char *start, enveloped_data_t *envelopedData,
+								   signed_attributes_t *signedAttributes);
+
+static int writeSignedDataInnerSetSeq(unsigned char **p, unsigned char *start, enveloped_data_t *envelopedData,
+									  signed_attributes_t *signedAttributes);
+
+static int writeSignedDataInnerSetSeqHashSeq(unsigned char **p, unsigned char *start);
+
+static int writeContSignedAttributes(unsigned char **p, unsigned char *start, signed_attributes_t *signedAttributes);
+
+static int writeSig(unsigned char **p, unsigned char *start, signed_attributes_t *signedAttributes);
+
+static int writeSignedInfo(unsigned char **p, unsigned char *start, enveloped_data_t *envelopedData);
+
+static int writeSequenceOidSetOctet(unsigned char **p, unsigned char *start, char *oid, unsigned char *octets,
+									unsigned short octetsLen);
+
+static int writeSequenceOidSetOid(unsigned char **p, unsigned char *start, char *oid,
+								  char *oidForSet);
 
 /**
  * Write a Certificate info in the current buffer at p, p is automatically updated past the appended value.
@@ -524,9 +569,7 @@ int writeKeyPairDer(unsigned char *buf, unsigned short bufSize, unsigned short *
 	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_mpi(&c, buf, &mpiN));
 	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_int(&c, buf, 0));
 
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(&c, buf, (size_t) len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
-
+	ADD_SEQUENCE(&c, buf);
 	POYNT_DEBUG("DER ENCODED (len:%u b): %s", len, Bytes2String(c, (unsigned int) len));
 
 	*derLen = (unsigned short) len;
@@ -568,9 +611,11 @@ unsigned int RklTls_GetDerEncodedKeyPair(unsigned char *buf, unsigned short bufS
 	return REP_STATUS_SUCCESS;
 }
 
-/*
+/**
+ *  === SET/SEQUENCE
  *  1137:d=3  hl=4 l= 516 cons:    SET
  *  1141:d=4  hl=4 l= 512 cons:     SEQUENCE
+ *  === certificate info
  *  1145:d=5  hl=2 l=   1 prim:      INTEGER           :01
  *  1148:d=5  hl=2 l=  74 cons:      SEQUENCE
  *  1150:d=6  hl=2 l=  65 cons:       SEQUENCE
@@ -587,8 +632,10 @@ unsigned int RklTls_GetDerEncodedKeyPair(unsigned char *buf, unsigned short bufS
  *  1192:d=9  hl=2 l=   3 prim:          OBJECT            :commonName
  *  1197:d=9  hl=2 l=  18 prim:          PRINTABLESTRING   :TR34 Sample CA KDH
  *  1217:d=6  hl=2 l=   5 prim:       INTEGER           :3400000006
+ *  === SHA256 sequence
  *  1224:d=5  hl=2 l=  11 cons:      SEQUENCE
  *  1226:d=6  hl=2 l=   9 prim:       OBJECT            :sha256
+ *  === Context specific
  *  1237:d=5  hl=3 l= 142 cons:      cont [ 0 ]
  *  1240:d=6  hl=2 l=  24 cons:       SEQUENCE
  *  1242:d=7  hl=2 l=   9 prim:        OBJECT            :contentType
@@ -617,12 +664,14 @@ unsigned int RklTls_GetDerEncodedKeyPair(unsigned char *buf, unsigned short bufS
  *       0010 - a0 8f f7 9a 28 07 86 04-4c e0 4e fe c6 d4 c1 f5   ....(...L.N.....
  *       0020 - 4f 6f 0e 09 38 22 1a 74-05 ac ce 21 19 1f ac 86   Oo..8".t...!....
  */
-static int writeSignedDataSet(unsigned char **p, unsigned char *start, enveloped_data_t *envelopedData)
+// or inner set
+// Ref: X9 TR34-2012 Sec B.2.2.5.1 pg 70
+static int writeContSignedAttributes(unsigned char **p, unsigned char *start, signed_attributes_t *signedAttributes)
 {
 	ENSURE_POYNT_MBEDTLS_INITIALIZED;
 
 
-	POYNT_DEBUG("Writing Data set..");
+	POYNT_DEBUG("Writing Cont Signed Attributes..");
 	unsigned short len = 0;
 	int ret = 0;
 
@@ -634,17 +683,275 @@ static int writeSignedDataSet(unsigned char **p, unsigned char *start, enveloped
 
 	//------------------------
 
-	MBEDTLS_ASN1_CHK_ADD(len, writeCertificateInfo(p, start, envelopedData->certificateInfo)); // version = 1
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_int(p, start, 1)); // version = 1
+	MBEDTLS_ASN1_CHK_ADD(len, RklTls_WriteSignedAttributes(p, start, signedAttributes));
 
+	// Set as an ImplicitSequence inside  InnerSetSequence
 	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
-
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SET));
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONTEXT_SPECIFIC | 0)); // implicit
 
 	//------------------------
-	POYNT_DEBUG("Writing Data set.. DONE len:%d : %s", len, Bytes2String(*p,len));
+	POYNT_DEBUG("Writing Cont Signed Attributes.. DONE len:%d : %s", len, Bytes2String(*p, len));
+	return ((int) len);
+
+
+}
+
+static int writeSequenceOidSetOctet(unsigned char **p, unsigned char *start, char *oid, unsigned char *octets,
+									unsigned short octetsLen)
+{
+	ENSURE_POYNT_MBEDTLS_INITIALIZED;
+
+
+	POYNT_DEBUG("Writing SequenceOidSetOctet %s ..", oid);
+	unsigned short len = 0;
+	int ret = 0;
+
+	if (*p - start < 1)
+	{
+		return (MBEDTLS_ERR_ASN1_BUF_TOO_SMALL);
+	}
+
+
+	//------------------------
+	//------------------------
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_octet_string(p, start, octets, octetsLen));
+	ADD_SET(p, start);
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_VAR(oid)));
+	ADD_SEQUENCE(p, start);
+	//------------------------
+	POYNT_DEBUG("Writing SequenceOidSetOctet.. DONE len:%d : %s", len, Bytes2String(*p, len));
+
+	return len;
+
+}
+
+static int writeSequenceOidSetOid(unsigned char **p, unsigned char *start, char *oid, char *oidForSet)
+{
+	ENSURE_POYNT_MBEDTLS_INITIALIZED;
+
+
+	POYNT_DEBUG("Writing SequenceOidSetOid %s %s..", oid, oidForSet);
+	unsigned short len = 0;
+	int ret = 0;
+
+	if (*p - start < 1)
+	{
+		return (MBEDTLS_ERR_ASN1_BUF_TOO_SMALL);
+	}
+
+
+	//------------------------
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_VAR(oidForSet)));
+	ADD_SET(p, start);
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_VAR(oid)));
+	ADD_SEQUENCE(p, start);
+
+	//------------------------
+	POYNT_DEBUG("Writing SequenceOidSetOid.. DONE len:%d : %s", len, Bytes2String(*p, len));
+
+	return len;
+
+}
+
+// P70 offset 0
+int RklTls_WriteSignedAttributes(unsigned char **p, unsigned char *start, signed_attributes_t *signedAttributes)
+{
+	ENSURE_POYNT_MBEDTLS_INITIALIZED;
+
+
+	POYNT_DEBUG("Writing Signed Attributes..");
+	unsigned short len = 0;
+	int ret = 0;
+
+	if (*p - start < 1)
+	{
+		return (MBEDTLS_ERR_ASN1_BUF_TOO_SMALL);
+	}
+
+	//    Defines the signed attributes structure.
+	//	Ref: X9 TR34-2012 Sec B.2.2.5.1 pg 70
+	//------------------------
+
+	// contentType.setComponentByName('msg-seq', msgSeq)
+	MBEDTLS_ASN1_CHK_ADD(len, writeSequenceOidSetOctet(p, start, OID_MESSAGE_DIGEST, signedAttributes->digest,
+													   TR34_DIGEST_LEN));
+
+	// contentType.setComponentByName('header-seq', headerSeq)
+	MBEDTLS_ASN1_CHK_ADD(len, writeSequenceOidSetOctet(p, start, OID_PKCS7_DATA, signedAttributes->header,
+													   TR34_SESSION_KEY_BLOCK_LEN));
+
+	// contentType.setComponentByName('nonce-seq', nonceSeq)
+	MBEDTLS_ASN1_CHK_ADD(len, writeSequenceOidSetOctet(p, start, OID_NONCE, signedAttributes->nonce, strlen(signedAttributes->nonce)));
+
+	// contentType.setComponentByName('content-seq', contentSeq)
+	MBEDTLS_ASN1_CHK_ADD(len, writeSequenceOidSetOid(p, start, OID_CONTENT_TYPE, OID_PKCS7_ENVELOPED_DATA));
+
+
+	//------------------------
+	POYNT_DEBUG("Writing Signed Attributes.. DONE len:%d : %s", len, Bytes2String(*p, len));
+	return ((int) len);
+
+
+}
+
+static int writeSignedInfo(unsigned char **p, unsigned char *start, enveloped_data_t *envelopedData)
+{
+	ENSURE_POYNT_MBEDTLS_INITIALIZED;
+
+
+	POYNT_DEBUG("Writing Signed Info..");
+	unsigned short len = 0;
+	int ret = 0;
+
+	if (*p - start < 1)
+	{
+		return (MBEDTLS_ERR_ASN1_BUF_TOO_SMALL);
+	}
+
+
+	//------------------------
+	MBEDTLS_ASN1_CHK_ADD(len,
+						 mbedtls_asn1_write_algorithm_identifier(p,
+																 start,
+																 OID_ADD_LEN_CONST(MBEDTLS_OID_DIGEST_ALG_SHA256),
+																 0)); // This OBJECT IDENTIFIER WILL BE FOLLOWED BY NULL
+	//------------------------
+
+	return len;
+
+
+}
+
+static int writeSig(unsigned char **p, unsigned char *start, signed_attributes_t *signedAttributes)
+{
+	ENSURE_POYNT_MBEDTLS_INITIALIZED;
+
+
+	POYNT_DEBUG("Writing Sig..");
+	unsigned short len = 0;
+	int ret = 0;
+
+	if (*p - start < 1)
+	{
+		return (MBEDTLS_ERR_ASN1_BUF_TOO_SMALL);
+	}
+
+
+	//------------------------
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_octet_string(p, start, signedAttributes->signature, sizeof(signedAttributes->signature)));
+	//------------------------
+
+	POYNT_DEBUG("Writing Sig.. DONE len:%d : %s", len, Bytes2String(*p, len));
+
+	return len;
+
+}
+
+static int writeSignedDataInnerSetSeqHashSeq(unsigned char **p, unsigned char *start)
+{
+	ENSURE_POYNT_MBEDTLS_INITIALIZED;
+
+
+	POYNT_DEBUG("Writing SignedDataInnerSetSeqHashSeq..");
+	unsigned short len = 0;
+	int ret = 0;
+
+	if (*p - start < 1)
+	{
+		return (MBEDTLS_ERR_ASN1_BUF_TOO_SMALL);
+	}
+
+
+	//------------------------
+
+	// hashSeq = SequenceOid()
+	// hashSeq.setComponentByName('oid', '2.16.840.1.101.3.4.2.1')
+	ADD_ALG_256_SEQ(p, start);
+
+	//------------------------
+	POYNT_DEBUG("Writing SignedDataInnerSetSeqHashSeq.. DONE len:%d : %s", len, Bytes2String(*p, len));
+	return ((int) len);
+
+}
+
+static int writeSignedDataInnerSetSeq(unsigned char **p,
+									  unsigned char *start,
+									  enveloped_data_t *envelopedData,
+									  signed_attributes_t *signedAttributes)
+{
+	ENSURE_POYNT_MBEDTLS_INITIALIZED;
+
+
+	POYNT_DEBUG("Writing Signed Data Inner SetSeq..");
+	unsigned short len = 0;
+	int ret = 0;
+
+	if (*p - start < 1)
+	{
+		return (MBEDTLS_ERR_ASN1_BUF_TOO_SMALL);
+	}
+
+
+	//------------------------
+
+	// innerSetSeq.setComponentByName('sig', signature)
+	MBEDTLS_ASN1_CHK_ADD(len, writeSig(p, start, signedAttributes));
+
+	// innerSetSeq.setComponentByName('sig-info', sigSeq),
+	MBEDTLS_ASN1_CHK_ADD(len, writeSignedInfo(p, start, envelopedData));
+
+	//  innerSetSeq.setComponentByName('cont', signedAttributes)
+	MBEDTLS_ASN1_CHK_ADD(len, writeContSignedAttributes(p, start, signedAttributes));
+
+	// innerSetSeq.setComponentByName('hash', hashSeq)
+	MBEDTLS_ASN1_CHK_ADD(len, writeSignedDataInnerSetSeqHashSeq(p, start));
+
+	// innerSetSeq.setComponentByName('certificate-info-sequence',certInfo)
+	MBEDTLS_ASN1_CHK_ADD(len, writeCertificateInfo(p, start, envelopedData->certificateInfo));
+
+	// innerSetSeq.setComponentByName('version', 1)
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_int(p, start, 1)); // version = 1
+
+	// innerSetSeq = self.InnerSetSequence()
+	// pg. 104 offset 71
+	ADD_SEQUENCE(p, start);
+
+
+	//------------------------
+	POYNT_DEBUG("Writing Signed Data Inner SetSeq.. DONE len:%d : %s", len, Bytes2String(*p, len));
+	return ((int) len);
+
+}
+
+static int writeSignedDataInnerSet(unsigned char **p,
+								   unsigned char *start,
+								   enveloped_data_t *envelopedData,
+								   signed_attributes_t *signedAttributes)
+{
+	ENSURE_POYNT_MBEDTLS_INITIALIZED;
+
+
+	POYNT_DEBUG("Writing Signed Data Inner Set Seq..");
+	unsigned short len = 0;
+	int ret = 0;
+
+	if (*p - start < 1)
+	{
+		return (MBEDTLS_ERR_ASN1_BUF_TOO_SMALL);
+	}
+
+
+	//------------------------
+
+
+	// innerSet.setComponentByName('sequence', innerSetSeq)
+	MBEDTLS_ASN1_CHK_ADD(len, writeSignedDataInnerSetSeq(p, start, envelopedData, signedAttributes));
+
+	// innerSet = SetSequence()
+	ADD_SET(p, start);
+
+	//------------------------
+	POYNT_DEBUG("Writing Signed Data Inner Set.. DONE len:%d : %s", len, Bytes2String(*p, len));
 	return ((int) len);
 
 }
@@ -671,18 +978,14 @@ static int writeSignedDataDigestSet(unsigned char **p, unsigned char *start)
 
 
 	//------------------------
-	MBEDTLS_ASN1_CHK_ADD(len,
-						 mbedtls_asn1_write_algorithm_identifier(p, start, OID_ADD_LEN(MBEDTLS_OID_DIGEST_ALG_SHA256),
-																 0));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
-
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SET));
+	// signedDataDigestSequence
+	ADD_ALG_256_SEQ(p, start);
+	// SetSequence
+	ADD_SET(p, start);
 
 	//------------------------
 
-	POYNT_DEBUG("Writing DER Signed Data Digest Set .. DONE len:%d : %s", len, Bytes2String(*p,len));
+	POYNT_DEBUG("Writing DER Signed Data Digest Set .. DONE len:%d : %s", len, Bytes2String(*p, len));
 
 	return ((int) len);
 
@@ -764,7 +1067,78 @@ static int writeSignedDataDigestSet(unsigned char **p, unsigned char *start)
  *       0020 - 4f 6f 0e 09 38 22 1a 74-05 ac ce 21 19 1f ac 86   Oo..8".t...!....
  */
 
-int RklTls_WriteSignedData(unsigned char **p, unsigned char *start, enveloped_data_t *envelopedData)
+int writeSignedDataSeq(unsigned char **p,
+					   unsigned char *start,
+					   enveloped_data_t *envelopedData,
+					   signed_attributes_t *signedAttributes)
+{
+	ENSURE_POYNT_MBEDTLS_INITIALIZED;
+
+
+	POYNT_DEBUG("Writing DER Signed Data Seq..");
+
+	unsigned short len = 0;
+	int ret = 0;
+
+	if (*p - start < 1)
+	{
+		return (MBEDTLS_ERR_ASN1_BUF_TOO_SMALL);
+	}
+
+
+	//------------------------
+	// signedDataSeq.setComponentByName('signed-data-set', innerSet)
+	MBEDTLS_ASN1_CHK_ADD(len, writeSignedDataInnerSet(p, start, envelopedData, signedAttributes));
+
+	// signedDataSeq.setComponentByName('enveloped-data', envelopedData)
+	MBEDTLS_ASN1_CHK_ADD(len, writeEnvelopedData(p, start, envelopedData));
+
+	// signedDataSeq.setComponentByName('set', signedDataDigestSet)
+	MBEDTLS_ASN1_CHK_ADD(len, writeSignedDataDigestSet(p, start));
+
+	// signedDataSeq.setComponentByName('version', 1)
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_int(p, start, 1)); // version = 1
+
+	// Note: this is a SignedDataSequence(ExplicitSequence) so it inside a an Explicit Context Specific tag
+	ADD_SEQUENCE(p, start);
+	//------------------------
+
+	POYNT_DEBUG("Writing DER Signed Data Seq.. DONE len:%d : %s", len, Bytes2String(*p, len));
+
+	return ((int) len);
+
+}
+
+unsigned int RklTls_GetEnvelopedDataDer(unsigned char *outBuf, unsigned short *outBufLen,
+										enveloped_data_t *envelopedData)
+{
+	ENSURE_POYNT_MBEDTLS_INITIALIZED;
+
+
+	POYNT_DEBUG("Creating DER Enveloped Data..");
+
+	PCI_U8(mbedBuf, 2048);
+	unsigned char *p = mbedBuf + sizeof(mbedBuf);
+
+	int len = writeEnvelopedData(&p, mbedBuf, envelopedData);
+	if (len < 0)
+	{
+		POYNT_ERROR("Couldn't write enveloped data. Error -0x%x", -len);
+		return REP_STATUS_BUILDER_ERROR;
+	}
+
+	*outBufLen = (unsigned short) len;
+	memcpy(outBuf, p, *outBufLen);
+
+	PCI_U8_CLEAR(mbedBuf);
+	POYNT_DEBUG("Creating DER Enveloped Data..DONE (len:%d): %s", *outBufLen, Bytes2String(outBuf, *outBufLen));
+	return REP_STATUS_SUCCESS;
+}
+
+int RklTls_WriteSignedData(unsigned char **p,
+						   unsigned char *start,
+						   enveloped_data_t *envelopedData,
+						   signed_attributes_t *signedAttributes)
 {
 	ENSURE_POYNT_MBEDTLS_INITIALIZED;
 
@@ -782,46 +1156,29 @@ int RklTls_WriteSignedData(unsigned char **p, unsigned char *start, enveloped_da
 
 	//------------------------
 
-	MBEDTLS_ASN1_CHK_ADD(len, writeSignedDataSet(p, start, envelopedData));
-	MBEDTLS_ASN1_CHK_ADD(len, writeEnvelopedData(p, start, envelopedData));
-	MBEDTLS_ASN1_CHK_ADD(len, writeSignedDataDigestSet(p, start));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_int(p, start, 1)); // version = 1
-
+	MBEDTLS_ASN1_CHK_ADD(len, writeSignedDataSeq(p, start, envelopedData, signedAttributes));
 
 	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start,
+													 MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED |
+													 0)); // explicit -
 
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 0)); // explicit -
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN_CONST(OID_PKCS7_SIGNED_DATA)));
 
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN(OID_PKCS7_DATA)));
-
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
+	ADD_SEQUENCE(p, start);
 
 	//------------------------
 
-	POYNT_DEBUG("Writing DER Signed Data .. DONE len:%d : %s", len, Bytes2String(*p,len));
+	POYNT_DEBUG("Writing DER Signed Data .. DONE len:%d : %s", len, Bytes2String(*p, len));
 
 	return ((int) len);
 
 }
 
 /**
- * B9p101
- * EnvelopedData (inner content):
- * The originatorInfo field is omitted.
- * KeyTransRecipientInfo is chosen for RecipientInfo. IssuerAndSerialNumber is chosen for KeyTransRecipientInfo RecipientIdentifier.
- * The KRD identifier, IDKRDCRED, is included in the RecipientInfos issuerAndSerialNumber field.
- * The keyEncryptionAlgorithm specifies id-RSAES-OAEP : ��1.2.840.113549.1.1.7'. The encryptedKey field contains the encrypting key.
- * The EncryptedContentInfo contentType is id-data.
- * The EncyptedContentInfo contentEncryptionAlgorithm specifies id-tECB :
- * '1.2.840.10047.1.1'.
- * The EncyptedContentInfo encryptedContent field contains the encrypted Key Block BE. The unprotectedAttrs field is omitted.
- *
  *  Defines the structure for the enveloped data structure.
  *  Ref: X9 TR34-2012 Sec B.2.2.3.1 pg 65
- *     0:d=0  hl=4 l= 597 cons: SEQUENCE <-- ommitted
+ *     0:d=0  hl=4 l= 597 cons: SEQUENCE <-- ommitted when including as octet string within signedData
  *     4:d=1  hl=2 l=   1 prim:  INTEGER           :00
  *     7:d=1  hl=4 l= 414 cons:  SET
  *    11:d=2  hl=4 l= 410 cons:   SEQUENCE
@@ -869,9 +1226,36 @@ int RklTls_WriteSignedData(unsigned char **p, unsigned char *start, enveloped_da
  *       0010 - 53 9a e8 bf 51 a9 26 c5-5f e4 85 8b e4 80 85 65   S...Q.&._......e
  *
  */
+static unsigned int getPkc7EnvData(unsigned char *outBuf, unsigned short outBufSize, unsigned short *outLen,
+								   enveloped_data_t *envelopedData)
+{
+	PCI_U8(start, 2048);
+
+	int ret = 0;
+	unsigned char *p = start + sizeof(start);
+	// pg. 66 offset 425
+	if ((ret = writePkc7EnvData(&p, start, envelopedData)) < 0)
+	{
+		POYNT_ERROR("Couldn't build PKC7Env Data. Error -0x%x", -ret);
+		return REP_STATUS_BUILDER_ERROR;
+	}
+
+	memcpy(outBuf, p, ret);
+	*outLen = (unsigned short) ret;
+	if (outBufSize < ret)
+	{
+		POYNT_ERROR("Buffer overflow (PKC7Env Data)");
+		return REP_STATUS_BUFFER_OVERFLOW;
+	}
+	return REP_STATUS_SUCCESS;
+}
+
+
+/**
+ * Explicit context-specific enveloped data
+ */
 static int writeEnvelopedData(unsigned char **p, unsigned char *start, enveloped_data_t *envelopedData)
 {
-
 	ENSURE_POYNT_MBEDTLS_INITIALIZED;
 
 
@@ -885,36 +1269,80 @@ static int writeEnvelopedData(unsigned char **p, unsigned char *start, enveloped
 		return (MBEDTLS_ERR_ASN1_BUF_TOO_SMALL);
 	}
 
-
-
 	//---------------------------
-
-	MBEDTLS_ASN1_CHK_ADD(len, writeEncSessionKeySequence(p, start, envelopedData));
-
-	MBEDTLS_ASN1_CHK_ADD(len, writeEnvelopedDataInnerSet(p, start, envelopedData));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_int(p, start, 0)); // version = 0
-
-
 	/*
- *    41:d=3  hl=4 l= 616 cons:    SEQUENCE
- *    45:d=4  hl=2 l=   9 prim:     OBJECT            :pkcs7-envelopedData
- *    56:d=4  hl=4 l= 601 cons:     cont [ 0 ]
- *    60:d=5  hl=4 l= 597 prim:      OCTET STRING
-
+     *    41:d=3  hl=4 l= 616 cons:    SEQUENCE
+     *    45:d=4  hl=2 l=   9 prim:     OBJECT            :pkcs7-envelopedData
+     *    56:d=4  hl=4 l= 601 cons:     cont [ 0 ]
+     *    60:d=5  hl=4 l= 597 prim:      OCTET STRING
+	 * <OCTET STRING>
 	 */
 
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_octet_string(p, start, NULL, 0)); // what's above is a inner structure how do we represent it?
+	PCI_U8(pkcs7EnvData, 2048);
+	unsigned int r;
+	unsigned short pkcs7EnvDataLen = 0;
+	// # pg. 66 offset 425
+	if ((r = getPkc7EnvData(pkcs7EnvData, sizeof(pkcs7EnvData), &pkcs7EnvDataLen, envelopedData)))
+	{
+		POYNT_ERROR("Failed to get PKCS7 Env data. Error %s(0x%x)", RS(r));
+		return r;
+	}
+
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_octet_string(p, start, pkcs7EnvData, pkcs7EnvDataLen));
+	PCI_U8_CLEAR(pkcs7EnvData);
 
 	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 0)); // explicit -
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start,
+													 MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED |
+													 0)); // explicit -
 
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN(OID_PKCS7_ENVELOPED_DATA)));
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN_CONST(OID_PKCS7_ENVELOPED_DATA)));
 
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
+	ADD_SEQUENCE(p, start);
+	//---------------------------
+	POYNT_DEBUG("Writing DER EnvelopedData .. DONE len:%d : %s", len, Bytes2String(*p, len));
+
+	return (int) len;
+
+
+}
+
+static int writePkc7EnvData(unsigned char **p, unsigned char *start, enveloped_data_t *envelopedData)
+{
+
+	ENSURE_POYNT_MBEDTLS_INITIALIZED;
+
+
+	POYNT_DEBUG("Writing DER PKC7EnvData..");
+
+	unsigned short len = 0;
+	int ret = 0;
+
+	if (*p - start < 1)
+	{
+		return (MBEDTLS_ERR_ASN1_BUF_TOO_SMALL);
+	}
+
+
 
 	//---------------------------
-	POYNT_DEBUG("Writing DER EnvelopedData .. DONE len:%d : %s", len, Bytes2String(*p,len));
+
+	// envDataStructure.setComponentByName('seq', pkcs7DataSequence)
+	MBEDTLS_ASN1_CHK_ADD(len, writeEncSessionKeySequence(p, start, envelopedData));
+
+	// envDataStructure.setComponentByName('set', innerSet)
+	MBEDTLS_ASN1_CHK_ADD(len, writeEnvelopedDataInnerSet(p, start, envelopedData));
+
+	// envDataStructure.setComponentByName('version', 0)
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_int(p, start, 0)); // version = 0
+
+// Manu: for some reason the spec include the envelope in a sequence, but the py sample omits it
+	ADD_SEQUENCE(p, start);
+
+
+
+	//---------------------------
+	POYNT_DEBUG("DER PKCS7EnvData (pg. 66 offset 425) len:%d : %s", len, Bytes2String(*p, len));
 
 	return (int) len;
 }
@@ -959,11 +1387,9 @@ static int writeCertificateInfo(unsigned char **p, unsigned char *start, certifi
 	}
 	*p -= len;
 
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_int(p, start, val->version)); // version = 0
+	ADD_SEQUENCE(p, start);
 
-	POYNT_DEBUG("Writing Certificate Info.. DONE len:%d : %s", len, Bytes2String(*p,len));
+	POYNT_DEBUG("Writing Certificate Info.. DONE len:%d : %s", len, Bytes2String(*p, len));
 	return ((int) len);
 
 }
@@ -1099,15 +1525,15 @@ static int writeEnvelopedDataInnerSet(unsigned char **p, unsigned char *start, e
 		return (MBEDTLS_ERR_ASN1_BUF_TOO_SMALL);
 	}
 
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_octet_string(p, start, envelopedData->encEphemeralKey, sizeof(envelopedData->encEphemeralKey)));
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_octet_string(p, start, envelopedData->encEphemeralKey,
+															  sizeof(envelopedData->encEphemeralKey)));
 	MBEDTLS_ASN1_CHK_ADD(len, writeEnvelopedDataEkInfo(p, start));
 	MBEDTLS_ASN1_CHK_ADD(len, writeCertificateInfo(p, start, envelopedData->certificateInfo));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SET));
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_int(p, start, 0)); // version = 0
+	ADD_SEQUENCE(p, start);
+	ADD_SET(p, start);
 
-	POYNT_DEBUG("Writing EnvelopedDataInnerSet .. DONE len:%d : %s", len, Bytes2String(*p,len));
+	POYNT_DEBUG("Writing EnvelopedDataInnerSet .. DONE len:%d : %s", len, Bytes2String(*p, len));
 
 	return (int) len;
 
@@ -1143,27 +1569,24 @@ static int writeEnvelopedDataEkInfo(unsigned char **p, unsigned char *start)
 	}
 	// Optional Label default is null string
 	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_octet_string(p, start, NULL, 0));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN(OID_PSPECIFIED)));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN_CONST(OID_PSPECIFIED)));
+	ADD_SEQUENCE(p, start);
 
 
 	MBEDTLS_ASN1_CHK_ADD(len, writeEnvelopedDataOidMgf1(p, start));
 
 	MBEDTLS_ASN1_CHK_ADD(len,
-						 mbedtls_asn1_write_algorithm_identifier(p, start, OID_ADD_LEN(MBEDTLS_OID_DIGEST_ALG_SHA256),
-																 0));
+						 mbedtls_asn1_write_algorithm_identifier(p, start, OID_ADD_LEN_CONST(MBEDTLS_OID_DIGEST_ALG_SHA256),
+																 0)); // This OBJECT IDENTIFIER WILL BE FOLLOWED BY NULL
 
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
+	ADD_SEQUENCE(p, start);
 
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN(OID_RSAES_OAEP)));
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN_CONST(OID_RSAES_OAEP)));
 
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
+	ADD_SEQUENCE(p, start);
 
 
-	POYNT_DEBUG("Writing EnvelopedDataEkInfo.. DONE len:%d : %s", len, Bytes2String(*p,len));
+	POYNT_DEBUG("Writing EnvelopedDataEkInfo.. DONE len:%d : %s", len, Bytes2String(*p, len));
 
 	return ((int) len);
 
@@ -1188,23 +1611,23 @@ static int writeEncSessionKeySequence(unsigned char **p, unsigned char *start, e
 
 	POYNT_DEBUG("Writing EncSessionKeySequence ..");
 
+	// pkcs7DataSequence.setComponentByName('context-specific', encSessionKey)
 	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_octet_string(p, start, envelopedData->encSessionKey,
 															  envelopedData->encSessionKeyLen));
 	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONTEXT_SPECIFIC | 0));
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONTEXT_SPECIFIC | 0)); // implicit
+	// sessionKeySequence.setComponentByName('session-key-iv', IV)
 	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_octet_string(p, start, envelopedData->iv, TR34_SESSION_KEY_IV_LEN));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN(MBEDTLS_OID_DES_EDE3_CBC)));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN(OID_PKCS7_DATA)));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN_CONST(MBEDTLS_OID_DES_EDE3_CBC)));
+	ADD_SEQUENCE(p, start);
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN_CONST(OID_PKCS7_DATA)));
+	ADD_SEQUENCE(p, start);
 
 	if (*p - start < 1)
 	{
 		return (MBEDTLS_ERR_ASN1_BUF_TOO_SMALL);
 	}
-	POYNT_DEBUG("Writing EncSessionKeySequence.. DONE len:%d : %s", len, Bytes2String(*p,len));
+	POYNT_DEBUG("Writing EncSessionKeySequence.. DONE len:%d : %s", len, Bytes2String(*p, len));
 
 	return (int) len;
 }
@@ -1217,15 +1640,11 @@ static int writeEnvelopedDataOidMgf1(unsigned char **p, unsigned char *start)
 
 	POYNT_DEBUG("Writing EnvelopedDataOidMgf1 ..");
 
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN(MBEDTLS_OID_DIGEST_ALG_SHA256)));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
+	ADD_ALG_256_SEQ(p, start);
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN_CONST(OID_MGF1)));
+	ADD_SEQUENCE(p, start);
 
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN(OID_MGF1)));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
-
-	POYNT_DEBUG("Writing EnvelopedDataOidMgf1.. DONE len:%d : %s", len, Bytes2String(*p,len));
+	POYNT_DEBUG("Writing EnvelopedDataOidMgf1.. DONE len:%d : %s", len, Bytes2String(*p, len));
 
 	return len;
 
@@ -1258,14 +1677,14 @@ static int writeKeyBlockHeaderSequence(unsigned char **p, unsigned char *start, 
 	//------------------------
 
 	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_octet_string(p, start, keyHeader, TR34_SESSION_KEY_BLOCK_LEN));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SET));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN(OID_PKCS7_DATA)));
 	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE));
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SET));
+	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_oid(p, start, OID_ADD_LEN_CONST(OID_PKCS7_DATA)));
+	ADD_SEQUENCE(p, start);
 
 	//------------------------
 
-	POYNT_DEBUG("Writing KeyBlockHeaderSequence.. DONE len:%d : %s", len, Bytes2String(*p,len));
+	POYNT_DEBUG("Writing KeyBlockHeaderSequence.. DONE len:%d : %s", len, Bytes2String(*p, len));
 
 	return ((int) len);
 
@@ -1338,14 +1757,22 @@ int RklTls_WriteSessionKeyBlockInClearSequence(unsigned char **p,
 	MBEDTLS_ASN1_CHK_ADD(len, writeCertificateInfo(p, start, certificateInfo));
 	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_int(p, start, 1)); // always 1
 
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
-	MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED |
-															   MBEDTLS_ASN1_SEQUENCE));
+	ADD_SEQUENCE(p, start);
 
 	//------------------------
 
-	POYNT_DEBUG("Writing SessionKeyBlockInClearSequence.. DONE len:%d : %s", len, Bytes2String(*p,len));
+	POYNT_DEBUG("Writing SessionKeyBlockInClearSequence.. DONE len:%d : %s", len, Bytes2String(*p, len));
 
 	return ((int) len);
+
+}
+
+unsigned int RklTls_GetSha256(unsigned char *input, unsigned short len, unsigned char *digest)
+{
+	ENSURE_POYNT_MBEDTLS_INITIALIZED;
+
+	mbedtls_sha256(input, len, digest, 0 /*use 256 */ );
+
+	return REP_STATUS_SUCCESS;
 
 }

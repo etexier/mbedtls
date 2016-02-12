@@ -91,5 +91,14 @@ unsigned int RklTls_CertEncrypt(unsigned char *output, rkms_cert_der_t *cert, un
 unsigned int RklTls_GetDerEncodedKeyPair(unsigned char *buf, unsigned short bufSize, unsigned short *derLen,
 										 rsa_key_pair_t *key);
 
-int RklTls_WriteSignedData(unsigned char **p, unsigned char *start, enveloped_data_t *envelopedData);
+int RklTls_WriteSignedData(unsigned char **p, unsigned char *start, enveloped_data_t *envelopedData,
+						   signed_attributes_t *signedAttributes);
+
+int RklTls_WriteSignedAttributes(unsigned char **p, unsigned char *start, signed_attributes_t *signedAttributes);
+
+
+unsigned int RklTls_GetSha256(unsigned char *checkSum, unsigned short len, unsigned char *digest);
+
+unsigned int RklTls_GetEnvelopedDataDer(unsigned char *outBuf, unsigned short *outBufLen, enveloped_data_t *envelopedData);
+
 #endif // _RKL_TLS__H_

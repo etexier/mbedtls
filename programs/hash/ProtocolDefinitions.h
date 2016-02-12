@@ -1,9 +1,4 @@
-/*
- * CommandDefinitions.h
- *
- *  Created on: Apr 22, 2015
- *      Author: pubuduk
- */
+
 
 #ifndef PROTOCOL_DEFINITIONS_H_
 #define PROTOCOL_DEFINITIONS_H_
@@ -13,23 +8,7 @@
 #define REP_STATUS Poynt_ToRepStatusName
 #define RS(_X_) REP_STATUS(_X_), _X_
 
-#define TR34_sha256WithRSAEncryption "1.2.840.113549.1.1.11"
-#define TR34_RSAES_OAEP "1.2.840.113549.1.1.7"
-#define TR34_SHA256 "2.16.840.1.101.3.4.2.1"
 
-
-// use https://www.viathinksoft.com/~daniel-marschall/asn.1/oid-converter/online.php OID converter, you must remove the first 2 bytes
-// '1.2.840.113549.1.1.7'
-#define OID_RSAES_OAEP "\x2A\x86\x48\x86\xF7\x0D\x01\x01\x07"
-// 1.2.840.113549.1.1.8
-#define OID_MGF1 "\x2A\x86\x48\x86\xF7\x0D\x01\x01\x08"
-// 1.2.840.113549.1.1.9
-#define OID_PSPECIFIED "\x2A\x86\x48\x86\xF7\x0D\x01\x01\x09"
-
-// 1.2.840.113549.1.7.1
-#define OID_PKCS7_DATA "\x2A\x86\x48\x86\xF7\x0D\x01\x07\x01"
-
-#define OID_ADD_LEN(_X_) _X_, sizeof(_X_)-1
 #define ENSURE_POYNT_MBEDTLS_INITIALIZED {while(0) {};}
 #define NO_ERROR 0
 
